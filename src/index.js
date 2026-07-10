@@ -81,7 +81,7 @@ function parseExtra(extraStr) {
   } catch { return {}; }
 }
 
-function catalogHandler(req, res) {
+async function catalogHandler(req, res) {
   const cfg = req.addonConfig || DEFAULT_CFG;
   const extra = parseExtra(req.params.extra);
   const search = (extra.search || '').toLowerCase();
@@ -89,17 +89,40 @@ function catalogHandler(req, res) {
   if (search) filtered = filtered.filter(s => s.name.toLowerCase().includes(search));
   const skip = parseInt(extra.skip || '0', 10) || 0;
   const paged = filtered.slice(skip, skip + 100);
-  const metas = paged.map(show => ({
-    id: `shuffle:${show.id}`,
-    type: 'series',
-    name: show.name,
-    poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
-    background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
-    logo: `https://images.metahub.space/logo/medium/${show.id}/img.png`,
-    description: `🎲 Surprise! One click → random ${cfg.topPercent === 100 ? 'episode' : `top ${cfg.topPercent}% episode`} of ${show.name}`,
-    posterShape: 'poster',
-    behaviorHints: { defaultVideoId: null },
-  }));
+
+  let metas;
+  if (cfg.autoStream) {
+    metas = await Promise.all(paged.map(async (show) => {
+      let videoId = null;
+      try {
+        const ep = await pickRandomEpisode(show.id, cfg.topPercent || 100);
+        videoId = `${show.id}:${ep.season}:${ep.number}`;
+      } catch {}
+      return {
+        id: `shuffle:${show.id}`,
+        type: 'series',
+        name: show.name,
+        poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
+        background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
+        logo: `https://images.metahub.space/logo/medium/${show.id}/img.png`,
+        description: `🎲 Surprise! One click → random ${cfg.topPercent === 100 ? 'episode' : `top ${cfg.topPercent}% episode`} of ${show.name}`,
+        posterShape: 'poster',
+        behaviorHints: { defaultVideoId: videoId },
+      };
+    }));
+  } else {
+    metas = paged.map(show => ({
+      id: `shuffle:${show.id}`,
+      type: 'series',
+      name: show.name,
+      poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
+      background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
+      logo: `https://images.metahub.space/logo/medium/${show.id}/img.png`,
+      description: `🎲 Surprise! One click → random ${cfg.topPercent === 100 ? 'episode' : `top ${cfg.topPercent}% episode`} of ${show.name}`,
+      posterShape: 'poster',
+      behaviorHints: { defaultVideoId: null },
+    }));
+  }
   res.json({ metas });
   for (const show of paged) getTopEpisodes(show.id, cfg.topPercent).catch(() => {});
 }
@@ -128,7 +151,6 @@ async function handleMeta(req, res) {
     const episode = await pickRandomEpisode(imdbId, cfg.topPercent || 100);
     const videoId = `${imdbId}:${episode.season}:${episode.number}`;
     const epLabel = `S${String(episode.season).padStart(2, '0')}E${String(episode.number).padStart(2, '0')}`;
-    const releaseDate = new Date().toISOString().split('T')[0];
 
     res.json({
       meta: {
@@ -145,15 +167,15 @@ async function handleMeta(req, res) {
         videos: [
           {
             id: videoId,
-            title: `🎁 ${epLabel} — ${episode.name}${episode.rating != null ? ` (★${episode.rating})` : ''}`,
-            overview: `Surprise pick from ${cfg.topPercent === 100 ? 'all episodes' : `top ${cfg.topPercent}%`}. ${show.name} ${epLabel}: ${episode.name}`,
-            released: releaseDate,
+            name: `${epLabel} ${episode.name}`,
             season: episode.season,
+            number: episode.number,
             episode: episode.number,
+            overview: `Surprise pick from ${cfg.topPercent === 100 ? 'all episodes' : `top ${cfg.topPercent}%`}. ${show.name} ${epLabel}: ${episode.name}`,
+            released: '2020-01-01T00:00:00.000Z',
           },
         ],
       },
-      cacheMaxAge: 0,
     });
   } catch (err) {
     console.error(`[Meta] Error for ${imdbId}:`, err.message);
@@ -172,15 +194,15 @@ async function handleMeta(req, res) {
         videos: [
           {
             id: fallbackVideoId,
-            title: `Retry — ${show.name} S01E01`,
-            overview: `Error: ${err.message}. Will retry with random episode on next open.`,
-            released: new Date().toISOString().split('T')[0],
+            name: 'S01E01 (Retry)',
             season: 1,
+            number: 1,
             episode: 1,
+            overview: `Error: ${err.message}. Will retry with random episode on next open.`,
+            released: '2020-01-01T00:00:00.000Z',
           },
         ],
       },
-      cacheMaxAge: 0,
     });
   }
 }

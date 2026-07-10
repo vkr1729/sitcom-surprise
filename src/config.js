@@ -36,6 +36,8 @@ function decodeConfig(base64String) {
     }
     config.topPercent = topPercent;
 
+    config.autoStream = !!config.autoStream;
+
     return config;
   } catch (err) {
     if (err.message.startsWith('Invalid config')) throw err;
