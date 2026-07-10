@@ -10,14 +10,13 @@ const app = express();
 const ADDON_ID = 'org.stremio.sitcomsurprise';
 const ADDON_NAME = 'Sitcom Surprise';
 const ADDON_VERSION = '5.0.0';
+const DEFAULT_CFG = { shows: [{ id: 'tt0898266', name: 'The Big Bang Theory' }], topPercent: 100 };
 
 function getLogoUrl(req) {
-  // Always HTTPS, prefer request host but fallback to renamed domain
   const fallback = 'https://sitcom-surprise.vercel.app/logo.png';
   if (!req) return fallback;
   const host = req.get('host');
   if (!host) return fallback;
-  // host may be old sitcom-shuffle-surprise.vercel.app - keep using requested host for logo to avoid mixed domain
   return `https://${host}/logo.png`;
 }
 
@@ -39,10 +38,7 @@ app.get('/', (req, res) => res.redirect('/configure'));
 
 app.param('config', (req, res, next, configParam) => {
   if (configParam === 'default') {
-    req.addonConfig = {
-      shows: [{ id: 'tt0898266', name: 'The Big Bang Theory' }],
-      topPercent: 100,
-    };
+    req.addonConfig = DEFAULT_CFG;
     return next();
   }
   try {
@@ -75,18 +71,6 @@ function buildManifest(cfg, req) {
   };
 }
 
-app.get('/manifest.json', (req, res) => {
-  res.json(buildManifest({ shows: [{ id: 'tt0898266', name: 'The Big Bang Theory' }], topPercent: 100 }, req));
-});
-app.get('/:config/manifest.json', (req, res) => {
-  res.json(buildManifest(req.addonConfig, req));
-  // Prefetch all shows for cache warming
-  for (const show of req.addonConfig.shows) {
-    getTopEpisodes(show.id, req.addonConfig.topPercent).catch(() => {});
-  }
-});
-app.get('/:config/manifest', (req, res) => res.json(buildManifest(req.addonConfig, req)));
-
 function parseExtra(extraStr) {
   if (!extraStr) return {};
   try {
@@ -98,7 +82,7 @@ function parseExtra(extraStr) {
 }
 
 function catalogHandler(req, res) {
-  const cfg = req.addonConfig;
+  const cfg = req.addonConfig || DEFAULT_CFG;
   const extra = parseExtra(req.params.extra);
   const search = (extra.search || '').toLowerCase();
   let filtered = cfg.shows;
@@ -120,15 +104,8 @@ function catalogHandler(req, res) {
   for (const show of paged) getTopEpisodes(show.id, cfg.topPercent).catch(() => {});
 }
 
-app.get('/:config/catalog/series/shuffle.json', catalogHandler);
-app.get('/:config/catalog/series/shuffle/:extra.json', catalogHandler);
-app.get('/:config/catalog/:type/:id.json', catalogHandler);
-app.get('/:config/catalog/:type/:id/:extra.json', catalogHandler);
-
-// BULLETPROOF META HANDLER - never returns meta:null for valid configured shows
 async function handleMeta(req, res) {
   const rawId = req.params.id;
-  // Extract imdb id robustly - handle shuffle:tt..., shuffle:tt...:1:2, tt..., url-encoded etc
   const decodedId = (() => {
     try { return decodeURIComponent(rawId); } catch { return rawId; }
   })();
@@ -136,25 +113,14 @@ async function handleMeta(req, res) {
   const imdbId = imdbMatch ? imdbMatch[0] : null;
 
   if (!imdbId) {
-    // No valid imdb in id - still try to not return null if we can, but if no imdb we must return null
     console.warn(`[Meta] No IMDb found in id: ${rawId}`);
     return res.json({ meta: null });
   }
 
-  // Normalize config - support both old and new param handling
-  let cfg = req.addonConfig;
-  if (!cfg) {
-    // No config decoded - try to still serve with fallback name
-    cfg = { shows: [{ id: imdbId, name: imdbId }], topPercent: 100 };
-  }
-
-  // BULLETPROOF: find show, but if not found in config, create fallback object instead of returning null
-  // This is the mother fix for "No metadata found" - we always return meta even if show not in configured list
-  // (user may have stale catalog entry, or config changed)
+  let cfg = req.addonConfig || DEFAULT_CFG;
   let show = cfg.shows ? cfg.shows.find(s => s.id === imdbId) : null;
   if (!show) {
     console.warn(`[Meta] Show ${imdbId} not in config [${cfg.shows?.map(s=>s.id).join(',')}], using fallback`);
-    // Fallback name: try to keep something meaningful
     show = { id: imdbId, name: imdbId };
   }
 
@@ -191,9 +157,6 @@ async function handleMeta(req, res) {
     });
   } catch (err) {
     console.error(`[Meta] Error for ${imdbId}:`, err.message);
-    // NEVER return meta:null here - return meta with error description and empty videos
-    // But still include meta so Stremio does NOT show "No metadata found"
-    // If TVmaze failed, we return fallback meta that still allows retry, with a placeholder video
     const fallbackVideoId = `${imdbId}:1:1`;
     res.json({
       meta: {
@@ -222,15 +185,43 @@ async function handleMeta(req, res) {
   }
 }
 
-app.get('/:config/meta/series/:id.json', handleMeta);
-app.get('/:config/meta/:type/:id.json', handleMeta);
-
 async function handleStream(req, res) {
   res.json({ streams: [], cacheMaxAge: 0 });
 }
 
+// Manifest
+app.get('/manifest.json', (req, res) => {
+  res.json(buildManifest(DEFAULT_CFG, req));
+});
+app.get('/:config/manifest.json', (req, res) => {
+  res.json(buildManifest(req.addonConfig, req));
+  for (const show of req.addonConfig.shows) {
+    getTopEpisodes(show.id, req.addonConfig.topPercent).catch(() => {});
+  }
+});
+app.get('/:config/manifest', (req, res) => res.json(buildManifest(req.addonConfig, req)));
+
+// Root catalog/meta without config (fixes No Metadata when testing root manifest directly)
+app.get('/catalog/series/shuffle.json', catalogHandler);
+app.get('/catalog/series/shuffle/:extra.json', catalogHandler);
+app.get('/catalog/:type/:id.json', catalogHandler);
+app.get('/catalog/:type/:id/:extra.json', catalogHandler);
+app.get('/meta/series/:id.json', handleMeta);
+app.get('/meta/:type/:id.json', handleMeta);
+
+// Configured catalog/meta (main flow)
+app.get('/:config/catalog/series/shuffle.json', catalogHandler);
+app.get('/:config/catalog/series/shuffle/:extra.json', catalogHandler);
+app.get('/:config/catalog/:type/:id.json', catalogHandler);
+app.get('/:config/catalog/:type/:id/:extra.json', catalogHandler);
+app.get('/:config/meta/series/:id.json', handleMeta);
+app.get('/:config/meta/:type/:id.json', handleMeta);
 app.get('/:config/stream/series/:id.json', handleStream);
 app.get('/:config/stream/:type/:id.json', handleStream);
+
+// Stream for root as well
+app.get('/stream/series/:id.json', handleStream);
+app.get('/stream/:type/:id.json', handleStream);
 
 try {
   const { _loadFileCache } = require('./tvmaze');

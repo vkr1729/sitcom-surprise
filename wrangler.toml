@@ -1,12 +1,7 @@
-name = "sitcom-shuffle"
+name = "sitcom-surprise"
 main = "src/worker.js"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
 CACHE_TTL_DAYS = "30"
-
-# KV namespace for persistent episode cache (create via: wrangler kv:namespace create CACHE)
-# [[kv_namespaces]]
-# binding = "CACHE"
-# id = "your-kv-id"

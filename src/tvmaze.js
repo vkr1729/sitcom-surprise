@@ -11,7 +11,7 @@ const MEMORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 function getCacheFilePath() {
   try {
     const xdg = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
-    const dir = path.join(xdg, 'sitcom-shuffle');
+    const dir = path.join(xdg, 'sitcom-surprise');
     fs.mkdirSync(dir, { recursive: true });
     return path.join(dir, 'episodes.json');
   } catch {
@@ -70,21 +70,28 @@ function scheduleSave() {
   }, 1000);
 }
 
+const FETCH_HEADERS = { 'User-Agent': 'SitcomSurprise/5.0', 'Accept': 'application/json' };
+
 async function lookupShowId(imdbId) {
   const res = await fetch(`https://api.tvmaze.com/lookup/shows?imdb=${imdbId}`, {
+    headers: FETCH_HEADERS,
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new Error(`TVmaze lookup failed for ${imdbId}: ${res.status}`);
   const show = await res.json();
+  if (!show || !show.id) throw new Error(`TVmaze returned null for ${imdbId}`);
   return show.id;
 }
 
 async function fetchAllEpisodes(tvmazeId) {
   const res = await fetch(`https://api.tvmaze.com/shows/${tvmazeId}/episodes`, {
+    headers: FETCH_HEADERS,
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error(`TVmaze episodes fetch failed for show ${tvmazeId}: ${res.status}`);
-  return res.json();
+  const episodes = await res.json();
+  if (!Array.isArray(episodes)) throw new Error(`TVmaze returned invalid episodes for show ${tvmazeId}`);
+  return episodes;
 }
 
 /**

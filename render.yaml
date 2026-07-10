@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: sitcom-shuffle
+    name: sitcom-surprise
     env: node
     plan: free
     buildCommand: npm install
