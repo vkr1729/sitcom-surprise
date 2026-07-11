@@ -15,17 +15,9 @@
   const percentDesc = document.getElementById('percent-desc');
   const percentClearBtn = document.getElementById('percent-clear');
 
-  const autostreamToggle = document.getElementById('autostream-toggle');
-
   const favorites = new Map();
   let topPercent = 20;
   let topPercentIsAll = false;
-  let autoStream = false;
-
-  autostreamToggle.addEventListener('change', () => {
-    autoStream = autostreamToggle.checked;
-    updateInstallBtn();
-  });
 
   // Default examples so configurator doesn't look empty
   const DEFAULT_SHOWS = [
@@ -124,7 +116,7 @@
 
   installBtn.addEventListener('click', () => {
     if (favorites.size === 0) return;
-    const config = { shows: Array.from(favorites.values()).map(s => ({ id: s.id, name: s.name })), topPercent: topPercentIsAll ? 100 : topPercent, autoStream };
+    const config = { shows: Array.from(favorites.values()).map(s => ({ id: s.id, name: s.name })), topPercent: topPercentIsAll ? 100 : topPercent };
     const encoded = btoa(JSON.stringify(config)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const base = window.location.origin;
     const manifestUrl = `${base}/${encoded}/manifest.json`;

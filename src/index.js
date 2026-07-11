@@ -60,14 +60,16 @@ function buildManifest(cfg, req) {
     resources: [
       'catalog',
       { name: 'meta', types: ['series'], idPrefixes: ['shuffle:'] },
-      { name: 'stream', types: ['series'], idPrefixes: ['shuffle:', 'tt'] },
+      { name: 'stream', types: ['series'], idPrefixes: ['shuffle:'] },
     ],
     types: ['series'],
     idPrefixes: ['shuffle:'],
-    catalogs: [
-      { type: 'series', id: 'shuffle', name: ADDON_NAME },
-    ],
+    catalogs: [{ type: 'series', id: 'shuffle', name: ADDON_NAME }],
     behaviorHints: { configurable: true, configurationRequired: false },
+    stremioAddonsConfig: {
+      issuer: 'https://stremio-addons.net',
+      signature: 'eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..SJlrGzhzvmlgE3T3Pk5mXQ.swO7lehOLqeaZgmRj1sU4GPVi5keX36xOTNQj78csMQXkV7pzYI4nGSWUB06Qdhn30qYDBeEyVtX4gksplpAkzfDHX1XX3b59YiQRvzuP5HqjR4Nq4T2Pli-ipgH1KCu.GqL2GUbwQmpd9g4SGFDgCA',
+    },
   };
 }
 
@@ -81,7 +83,7 @@ function parseExtra(extraStr) {
   } catch { return {}; }
 }
 
-async function catalogHandler(req, res) {
+function catalogHandler(req, res) {
   const cfg = req.addonConfig || DEFAULT_CFG;
   const extra = parseExtra(req.params.extra);
   const search = (extra.search || '').toLowerCase();
@@ -90,39 +92,17 @@ async function catalogHandler(req, res) {
   const skip = parseInt(extra.skip || '0', 10) || 0;
   const paged = filtered.slice(skip, skip + 100);
 
-  let metas;
-  if (cfg.autoStream) {
-    metas = await Promise.all(paged.map(async (show) => {
-      let videoId = null;
-      try {
-        const ep = await pickRandomEpisode(show.id, cfg.topPercent || 100);
-        videoId = `${show.id}:${ep.season}:${ep.number}`;
-      } catch {}
-      return {
-        id: `shuffle:${show.id}`,
-        type: 'series',
-        name: show.name,
-        poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
-        background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
-        logo: `https://images.metahub.space/logo/medium/${show.id}/img.png`,
-        description: `🎲 Surprise! One click → random ${cfg.topPercent === 100 ? 'episode' : `top ${cfg.topPercent}% episode`} of ${show.name}`,
-        posterShape: 'poster',
-        behaviorHints: { defaultVideoId: videoId },
-      };
-    }));
-  } else {
-    metas = paged.map(show => ({
-      id: `shuffle:${show.id}`,
-      type: 'series',
-      name: show.name,
-      poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
-      background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
-      logo: `https://images.metahub.space/logo/medium/${show.id}/img.png`,
-      description: `🎲 Surprise! One click → random ${cfg.topPercent === 100 ? 'episode' : `top ${cfg.topPercent}% episode`} of ${show.name}`,
-      posterShape: 'poster',
-      behaviorHints: { defaultVideoId: null },
-    }));
-  }
+  const metas = paged.map(show => ({
+    id: `shuffle:${show.id}`,
+    type: 'series',
+    name: show.name,
+    poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
+    background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
+    logo: `https://images.metahub.space/logo/medium/${show.id}/img.png`,
+    description: `🎲 Surprise! One click → random ${cfg.topPercent === 100 ? 'episode' : `top ${cfg.topPercent}% episode`} of ${show.name}`,
+    posterShape: 'poster',
+    behaviorHints: { defaultVideoId: null },
+  }));
   res.json({ metas });
   for (const show of paged) getTopEpisodes(show.id, cfg.topPercent).catch(() => {});
 }
@@ -132,19 +112,20 @@ async function handleMeta(req, res) {
   const decodedId = (() => {
     try { return decodeURIComponent(rawId); } catch { return rawId; }
   })();
-  const imdbMatch = decodedId.match(/(tt\d+)/);
-  const imdbId = imdbMatch ? imdbMatch[0] : null;
+
+  const imdbMatch = decodedId.match(/(shuffle:)(tt\d+)/);
+  const imdbId = imdbMatch ? imdbMatch[2] : null;
 
   if (!imdbId) {
-    console.warn(`[Meta] No IMDb found in id: ${rawId}`);
+    console.warn(`[Meta] No valid shuffle ID found: ${rawId}`);
     return res.json({ meta: null });
   }
 
   let cfg = req.addonConfig || DEFAULT_CFG;
   let show = cfg.shows ? cfg.shows.find(s => s.id === imdbId) : null;
   if (!show) {
-    console.warn(`[Meta] Show ${imdbId} not in config [${cfg.shows?.map(s=>s.id).join(',')}], using fallback`);
-    show = { id: imdbId, name: imdbId };
+    console.warn(`[Meta] Show ${imdbId} not in config, returning null`);
+    return res.json({ meta: null });
   }
 
   try {
@@ -223,7 +204,7 @@ app.get('/:config/manifest.json', (req, res) => {
 });
 app.get('/:config/manifest', (req, res) => res.json(buildManifest(req.addonConfig, req)));
 
-// Root catalog/meta without config (fixes No Metadata when testing root manifest directly)
+// Root catalog/meta without config
 app.get('/catalog/series/shuffle.json', catalogHandler);
 app.get('/catalog/series/shuffle/:extra.json', catalogHandler);
 app.get('/catalog/:type/:id.json', catalogHandler);

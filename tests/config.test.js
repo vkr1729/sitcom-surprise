@@ -11,7 +11,7 @@ describe('config', () => {
     };
     const encoded = encodeConfig(cfg);
     const decoded = decodeConfig(encoded);
-    assert.deepStrictEqual(decoded, { ...cfg, autoStream: false });
+    assert.deepStrictEqual(decoded, cfg);
   });
 
   it('defaults to 100% when topPercent missing', () => {
