@@ -23,9 +23,10 @@ describe('catalog single row', () => {
     const url = `http://localhost:${PORT}/${configStr}/catalog/series/shuffle.json`;
     const res = await fetch(url);
     const data = await res.json();
-    assert.equal(data.metas.length, 2);
-    assert.equal(data.metas[0].id, 'shuffle:tt0898266');
-    assert.equal(data.metas[0].type, 'series');
+    assert.equal(data.metas.length, 3);
+    assert.equal(data.metas[0].id, 'shuffle:surprise');
+    assert.equal(data.metas[1].id, 'shuffle:tt0898266');
+    assert.equal(data.metas[1].type, 'series');
   });
 
   it('legacy catalog ids still work but return same single list', async () => {

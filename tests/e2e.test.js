@@ -1,9 +1,18 @@
 'use strict';
 const assert = require('node:assert/strict');
-const { describe, it } = require('node:test');
+const { describe, it, before, after } = require('node:test');
 const { encodeConfig } = require('../src/config');
 
-const BASE = 'http://localhost:3000';
+const PORT = 3000 + Math.floor(Math.random() * 900);
+const BASE = `http://localhost:${PORT}`;
+let server;
+
+before(async () => {
+  const app = require('../src/index');
+  await new Promise((resolve) => { server = app.listen(PORT, resolve); });
+});
+
+after(() => { if (server) server.close(); });
 
 describe('e2e universal single catalog true 1-click', () => {
   const cfg = { shows: [{ id: 'tt0898266', name: 'The Big Bang Theory' }], topPercent: 100 };
@@ -18,8 +27,9 @@ describe('e2e universal single catalog true 1-click', () => {
 
   it('catalog returns tiles, meta returns single random video with defaultVideoId', async () => {
     const catalog = await (await fetch(`${BASE}/${configStr}/catalog/series/shuffle.json`)).json();
-    assert.equal(catalog.metas.length, 1);
-    assert.equal(catalog.metas[0].id, 'shuffle:tt0898266');
+    assert.equal(catalog.metas.length, 2);
+    assert.equal(catalog.metas[0].id, 'shuffle:surprise');
+    assert.equal(catalog.metas[1].id, 'shuffle:tt0898266');
 
     const meta1 = await (await fetch(`${BASE}/${configStr}/meta/series/shuffle:tt0898266.json`)).json();
     assert.ok(meta1.meta);

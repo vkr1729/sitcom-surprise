@@ -83,6 +83,14 @@ function parseExtra(extraStr) {
   } catch { return {}; }
 }
 
+function getSurprisePosterUrl(req) {
+  const fallback = 'https://sitcom-surprise.vercel.app/surprise-poster.png';
+  if (!req) return fallback;
+  const host = req.get('host');
+  if (!host) return fallback;
+  return `https://${host}/surprise-poster.png`;
+}
+
 function catalogHandler(req, res) {
   const cfg = req.addonConfig || DEFAULT_CFG;
   const extra = parseExtra(req.params.extra);
@@ -103,6 +111,23 @@ function catalogHandler(req, res) {
     posterShape: 'poster',
     behaviorHints: { defaultVideoId: null },
   }));
+
+  // Prepend the Surprise tile on the first page
+  if (skip === 0 && (!search || '🎲 surprise'.includes(search))) {
+    const surpriseTile = {
+      id: 'shuffle:surprise',
+      type: 'series',
+      name: '🎲 Surprise',
+      poster: getSurprisePosterUrl(req),
+      background: getSurprisePosterUrl(req),
+      logo: getLogoUrl(req),
+      description: '🎲 Random show, random episode — pure surprise!',
+      posterShape: 'poster',
+      behaviorHints: { defaultVideoId: null },
+    };
+    metas.unshift(surpriseTile);
+  }
+
   res.json({ metas });
   for (const show of paged) getTopEpisodes(show.id, cfg.topPercent).catch(() => {});
 }
@@ -113,6 +138,75 @@ async function handleMeta(req, res) {
     try { return decodeURIComponent(rawId); } catch { return rawId; }
   })();
 
+  let cfg = req.addonConfig || DEFAULT_CFG;
+
+  // --- Surprise tile: pick a random show, then a random episode ---
+  if (decodedId === 'shuffle:surprise' || decodedId === 'shuffle%3Asurprise') {
+    const shows = cfg.shows || [];
+    if (shows.length === 0) return res.json({ meta: null });
+    const show = shows[Math.floor(Math.random() * shows.length)];
+
+    try {
+      const episode = await pickRandomEpisode(show.id, cfg.topPercent || 100);
+      const videoId = `${show.id}:${episode.season}:${episode.number}`;
+      const epLabel = `S${String(episode.season).padStart(2, '0')}E${String(episode.number).padStart(2, '0')}`;
+
+      return res.json({
+        meta: {
+          id: 'shuffle:surprise',
+          type: 'series',
+          name: '🎲 Surprise',
+          poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
+          background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
+          logo: getLogoUrl(req),
+          description: `🎲 Surprise picked ${show.name}! ${epLabel} — ${episode.name}${episode.rating != null ? ` (★${episode.rating})` : ''}. New surprise every open!`,
+          releaseInfo: `${episode.season}`,
+          imdbRating: episode.rating != null ? String(episode.rating) : undefined,
+          behaviorHints: { defaultVideoId: videoId },
+          videos: [
+            {
+              id: videoId,
+              name: `${show.name} ${epLabel} — ${episode.name}`,
+              season: episode.season,
+              number: episode.number,
+              episode: episode.number,
+              overview: `🎲 Surprise! Randomly picked ${show.name} ${epLabel}: ${episode.name}`,
+              released: '2020-01-01T00:00:00.000Z',
+            },
+          ],
+        },
+      });
+    } catch (err) {
+      console.error(`[Meta] Surprise error for ${show.id}:`, err.message);
+      const fallbackVideoId = `${show.id}:1:1`;
+      return res.json({
+        meta: {
+          id: 'shuffle:surprise',
+          type: 'series',
+          name: '🎲 Surprise',
+          poster: `https://images.metahub.space/poster/medium/${show.id}/img.jpg`,
+          background: `https://images.metahub.space/background/medium/${show.id}/img.jpg`,
+          logo: getLogoUrl(req),
+          description: `⚠️ Could not fetch episodes for ${show.name}: ${err.message}. Retrying next open will get a surprise!`,
+          releaseInfo: '1',
+          behaviorHints: { defaultVideoId: fallbackVideoId },
+          videos: [
+            {
+              id: fallbackVideoId,
+              name: `${show.name} S01E01 (Retry)`,
+              season: 1,
+              number: 1,
+              episode: 1,
+              overview: `Error: ${err.message}. Will retry with random episode on next open.`,
+              released: '2020-01-01T00:00:00.000Z',
+            },
+          ],
+        },
+      });
+    }
+  }
+
+  // --- Per-show tile: existing behavior ---
   const imdbMatch = decodedId.match(/(shuffle:)(tt\d+)/);
   const imdbId = imdbMatch ? imdbMatch[2] : null;
 
@@ -121,7 +215,6 @@ async function handleMeta(req, res) {
     return res.json({ meta: null });
   }
 
-  let cfg = req.addonConfig || DEFAULT_CFG;
   let show = cfg.shows ? cfg.shows.find(s => s.id === imdbId) : null;
   if (!show) {
     console.warn(`[Meta] Show ${imdbId} not in config, returning null`);
