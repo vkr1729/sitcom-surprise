@@ -1,6 +1,6 @@
 {
   "name": "sitcom-surprise",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "Sitcom Surprise - one tile per show, true single click random episode, universal mode, persistent cache",
   "main": "src/index.js",
   "scripts": {
@@ -14,8 +14,5 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1"
-  },
-  "devDependencies": {
-    "puppeteer-core": "^25.3.0"
   }
 }

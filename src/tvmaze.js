@@ -1,12 +1,15 @@
-// src/tvmaze.js - persistent cache, configurable top %
+// src/tvmaze.js - persistent cache, configurable top %, stale-while-revalidate
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days persistent
-const MEMORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// Fresh for 24h; after that serve instantly from cache AND refresh in background
+// (stale-while-revalidate). Hard-expire after 30 days so lists never go stale.
+const FRESH_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours fresh
+const STALE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days usable-stale
+const MEMORY_TTL_MS = FRESH_TTL_MS;
 
 function getCacheFilePath() {
   try {
@@ -36,7 +39,7 @@ function loadFileCache() {
     let loaded = 0, expired = 0;
     for (const [key, entry] of Object.entries(parsed)) {
       if (!entry || !Array.isArray(entry.episodes)) continue;
-      if (now - (entry.cachedAt || 0) < CACHE_TTL_MS) {
+      if (now - (entry.cachedAt || 0) < STALE_TTL_MS) {
         memoryCache.set(key, entry);
         loaded++;
       } else expired++;
@@ -164,31 +167,13 @@ function cacheKey(imdbId, topPercent) {
   return `${imdbId}:${tp}`;
 }
 
-async function getTopEpisodes(imdbId, topPercent) {
-  loadFileCache();
-
-  let tp;
-  if (topPercent == null || topPercent === '' || topPercent === undefined) tp = 100;
-  else {
-    tp = Math.round(Number(topPercent));
-    if (!Number.isFinite(tp) || tp < 1) tp = 100;
-    if (tp > 100) tp = 100;
-  }
-  if (arguments.length === 1) tp = 100;
-
-  const key = cacheKey(imdbId, tp);
-  const cached = memoryCache.get(key);
-  if (cached && Date.now() - cached.cachedAt < MEMORY_TTL_MS) {
-    return cached.episodes;
-  }
-
-  console.log(`[TVMaze] CACHE MISS for ${imdbId} top=${tp}% — fetching`);
+async function fetchAndCache(imdbId, tp) {
   const tvmazeId = await lookupShowId(imdbId);
   const allEpisodes = await fetchAllEpisodes(tvmazeId);
   const top = filterTopEpisodes(allEpisodes, tp);
 
   const entry = { episodes: top, cachedAt: Date.now(), topPercent: tp, totalEpisodes: allEpisodes.length };
-  memoryCache.set(key, entry);
+  memoryCache.set(cacheKey(imdbId, tp), entry);
   scheduleSave();
   console.log(`[TVMaze] Cached ${top.length}/${allEpisodes.length} for ${imdbId} top ${tp}%`);
 
@@ -209,6 +194,38 @@ async function getTopEpisodes(imdbId, topPercent) {
   return top;
 }
 
+async function getTopEpisodes(imdbId, topPercent) {
+  loadFileCache();
+
+  let tp;
+  if (topPercent == null || topPercent === '' || topPercent === undefined) tp = 100;
+  else {
+    tp = Math.round(Number(topPercent));
+    if (!Number.isFinite(tp) || tp < 1) tp = 100;
+    if (tp > 100) tp = 100;
+  }
+  if (arguments.length === 1) tp = 100;
+
+  const key = cacheKey(imdbId, tp);
+  const cached = memoryCache.get(key);
+  const age = cached ? Date.now() - cached.cachedAt : Infinity;
+
+  if (cached && age < FRESH_TTL_MS) {
+    return cached.episodes;
+  }
+
+  // Stale-while-revalidate: serve instantly from cache, refresh in background
+  if (cached && age < STALE_TTL_MS) {
+    console.log(`[TVMaze] SWR for ${imdbId} top=${tp}% (age ${(age / 3600000).toFixed(1)}h) — serving cached, refreshing in background`);
+    fetchAndCache(imdbId, tp).catch(err =>
+      console.warn(`[TVMaze] Background refresh failed for ${imdbId}: ${err.message}`));
+    return cached.episodes;
+  }
+
+  console.log(`[TVMaze] CACHE MISS for ${imdbId} top=${tp}% — fetching`);
+  return fetchAndCache(imdbId, tp);
+}
+
 async function pickRandomEpisode(imdbId, topPercent) {
   const effectiveTp = topPercent == null || topPercent === '' ? 100 : topPercent;
   const top = await getTopEpisodes(imdbId, effectiveTp);
@@ -221,6 +238,9 @@ module.exports = {
   getTopEpisodes,
   pickRandomEpisode,
   filterTopEpisodes,
+  fetchAndCache,
+  FRESH_TTL_MS,
+  STALE_TTL_MS,
   _cache: memoryCache,
   _loadFileCache: loadFileCache,
   _saveFileCache: saveFileCache,

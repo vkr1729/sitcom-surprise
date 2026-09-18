@@ -66,35 +66,66 @@
 
   async function searchShows(query) {
     try {
-      const res = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`);
+      // Server-side multi-source search (TVMaze + IMDb merged): no CORS issues,
+      // covers shows TVMaze misses, and keeps working when one source is down.
+      const res = await fetch(`/search/${encodeURIComponent(query)}.json`);
+      if (!res.ok) throw new Error(`search ${res.status}`);
       const data = await res.json();
-      renderSearchResults(data);
+      renderSearchResults(data.results || []);
     } catch { searchResults.innerHTML = '<p class="error">Search failed. Please try again.</p>'; }
   }
 
-  function renderSearchResults(results) {
-    searchResults.innerHTML = results.filter(r => r.show && r.show.externals && r.show.externals.imdb).slice(0, 12).map(r => {
-      const show = r.show; const imdbId = show.externals.imdb; const poster = show.image ? show.image.medium : '';
-      const year = show.premiered ? show.premiered.slice(0, 4) : '?'; const isAdded = favorites.has(imdbId);
-      const safeName = escapeHtml(show.name); const safePoster = poster.replace(/'/g, '%27');
-      return `
-        <div class="show-card ${isAdded ? 'added' : ''}" data-id="${imdbId}">
-          <div class="poster-wrap">${poster ? `<img src="${poster}" alt="${safeName}" loading="lazy">` : '<div class="no-poster">No Image</div>'}</div>
-          <div class="show-info"><span class="show-title">${safeName}</span><span class="show-year">${year}</span></div>
-          <button class="btn-add" onclick="window.__addShow('${imdbId}', '${safeName.replace(/'/g, "\\'")}', '${safePoster}')">${isAdded ? '✓ Added' : '+ Add'}</button>
-        </div>`;
-    }).join('');
+  function showCardHtml(show, isAdded) {
+    const poster = show.poster || '';
+    const year = show.year || '?';
+    return `
+      <div class="show-card ${isAdded ? 'added' : ''}" data-id="${show.id}">
+        <div class="poster-wrap">${poster ? `<img src="${encodeURI(poster)}" alt="" loading="lazy">` : '<div class="no-poster">No Image</div>'}</div>
+        <div class="show-info"><span class="show-title" title="${escapeHtml(show.name)}">${escapeHtml(show.name)}</span><span class="show-year">${escapeHtml(String(year))}</span></div>
+        <button class="btn-add" data-add="${show.id}">${isAdded ? '✓ Added' : '+ Add'}</button>
+      </div>`;
   }
 
-  window.__addShow = function (id, name, poster) {
-    if (favorites.has(id)) favorites.delete(id);
-    else favorites.set(id, { id, name, poster });
+  const searchIndex = new Map();
+  const favIndex = new Map();
+
+  function renderSearchResults(results) {
+    searchIndex.clear();
+    for (const r of results) searchIndex.set(r.id, r);
+    if (results.length === 0) {
+      searchResults.innerHTML = '<p class="empty-state">No shows found. Try a different spelling.</p>';
+      return;
+    }
+    searchResults.innerHTML = results
+      .map(r => showCardHtml(r, favorites.has(r.id)))
+      .join('');
+  }
+
+  searchResults.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-add]');
+    if (!btn) return;
+    const show = searchIndex.get(btn.dataset.add);
+    if (show) toggleShow(show);
+  });
+
+  function toggleShow(show) {
+    if (favorites.has(show.id)) favorites.delete(show.id);
+    else favorites.set(show.id, { id: show.id, name: show.name, poster: show.poster || '' });
     renderFavorites();
-    const q = searchInput.value.trim(); if (q.length >= 2) searchShows(q);
+    searchResults.innerHTML = Array.from(searchIndex.values())
+      .map(r => showCardHtml(r, favorites.has(r.id)))
+      .join('');
     updateInstallBtn();
+  }
+  // Back-compat for any cached page still calling the old global
+  window.__addShow = function (id) {
+    const show = searchIndex.get(id) || favIndex.get(id);
+    if (show) toggleShow(show);
   };
 
   function renderFavorites() {
+    favIndex.clear();
+    for (const s of favorites.values()) favIndex.set(s.id, s);
     if (favorites.size === 0) {
       favoritesList.innerHTML = '<p class="empty-state">No shows yet. Search above to add your favorites!</p>';
       showCount.textContent = '0'; return;
@@ -102,11 +133,18 @@
     showCount.textContent = favorites.size;
     favoritesList.innerHTML = Array.from(favorites.values()).map(show => `
       <div class="show-card favorite" data-id="${show.id}">
-        <div class="poster-wrap">${show.poster ? `<img src="${show.poster}" alt="${escapeHtml(show.name)}" loading="lazy">` : '<div class="no-poster">No Image</div>'}</div>
-        <div class="show-info"><span class="show-title">${escapeHtml(show.name)}</span></div>
-        <button class="btn-remove" onclick="window.__addShow('${show.id}', '${escapeHtml(show.name).replace(/'/g, "\\'")}', '${show.poster}')">✕ Remove</button>
+        <div class="poster-wrap">${show.poster ? `<img src="${encodeURI(show.poster)}" alt="" loading="lazy">` : '<div class="no-poster">No Image</div>'}</div>
+        <div class="show-info"><span class="show-title" title="${escapeHtml(show.name)}">${escapeHtml(show.name)}</span></div>
+        <button class="btn-remove" data-remove="${show.id}">✕ Remove</button>
       </div>`).join('');
   }
+
+  favoritesList.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove]');
+    if (!btn) return;
+    const show = favIndex.get(btn.dataset.remove);
+    if (show) toggleShow(show);
+  });
 
   function updateInstallBtn() {
     const hasShows = favorites.size > 0;
@@ -117,7 +155,11 @@
   installBtn.addEventListener('click', () => {
     if (favorites.size === 0) return;
     const config = { shows: Array.from(favorites.values()).map(s => ({ id: s.id, name: s.name })), topPercent: topPercentIsAll ? 100 : topPercent };
-    const encoded = btoa(JSON.stringify(config)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    // TextEncoder-based base64url: safe for unicode names (btoa throws on non-latin1)
+    const bytes = new TextEncoder().encode(JSON.stringify(config));
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    const encoded = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const base = window.location.origin;
     const manifestUrl = `${base}/${encoded}/manifest.json`;
     const stremioUrl = `stremio://${base.replace(/^https?:\/\//, '')}/${encoded}/manifest.json`;

@@ -4,12 +4,13 @@ const express = require('express');
 const path = require('path');
 const { decodeConfig } = require('./config');
 const { pickRandomEpisode, getTopEpisodes } = require('./tvmaze');
+const { searchShows } = require('./search');
 
 const app = express();
 
 const ADDON_ID = 'org.stremio.sitcomsurprise';
 const ADDON_NAME = 'Sitcom Surprise';
-const ADDON_VERSION = '5.0.0';
+const ADDON_VERSION = '5.1.0';
 const DEFAULT_CFG = { shows: [{ id: 'tt0898266', name: 'The Big Bang Theory' }], topPercent: 100 };
 
 function getLogoUrl(req) {
@@ -95,8 +96,9 @@ function catalogHandler(req, res) {
   const cfg = req.addonConfig || DEFAULT_CFG;
   const extra = parseExtra(req.params.extra);
   const search = (extra.search || '').toLowerCase();
-  let filtered = cfg.shows;
-  if (search) filtered = filtered.filter(s => s.name.toLowerCase().includes(search));
+  const shows = Array.isArray(cfg.shows) ? cfg.shows : [];
+  let filtered = shows;
+  if (search) filtered = filtered.filter(s => (s.name || '').toLowerCase().includes(search));
   const skip = parseInt(extra.skip || '0', 10) || 0;
   const paged = filtered.slice(skip, skip + 100);
 
@@ -128,7 +130,7 @@ function catalogHandler(req, res) {
     metas.unshift(surpriseTile);
   }
 
-  res.json({ metas });
+  res.json({ metas, cacheMaxAge: 3600 });
   for (const show of paged) getTopEpisodes(show.id, cfg.topPercent).catch(() => {});
 }
 
@@ -152,6 +154,7 @@ async function handleMeta(req, res) {
       const epLabel = `S${String(episode.season).padStart(2, '0')}E${String(episode.number).padStart(2, '0')}`;
 
       return res.json({
+        cacheMaxAge: 0,
         meta: {
           id: 'shuffle:surprise',
           type: 'series',
@@ -180,6 +183,7 @@ async function handleMeta(req, res) {
       console.error(`[Meta] Surprise error for ${show.id}:`, err.message);
       const fallbackVideoId = `${show.id}:1:1`;
       return res.json({
+        cacheMaxAge: 0,
         meta: {
           id: 'shuffle:surprise',
           type: 'series',
@@ -227,6 +231,7 @@ async function handleMeta(req, res) {
     const epLabel = `S${String(episode.season).padStart(2, '0')}E${String(episode.number).padStart(2, '0')}`;
 
     res.json({
+      cacheMaxAge: 0,
       meta: {
         id: `shuffle:${imdbId}`,
         type: 'series',
@@ -252,9 +257,49 @@ async function handleMeta(req, res) {
       },
     });
   } catch (err) {
+    // Network/API down but we have a stale cache: never show "No metadata found"
+    const { _cache } = require('./tvmaze');
+    const tp = cfg.topPercent || 100;
+    const staleCandidates = [`${imdbId}:${tp}`, `${imdbId}:100`]
+      .map(k => _cache.get(k))
+      .filter(Boolean);
+    if (staleCandidates.length > 0) {
+      const entry = staleCandidates.sort((a, b) => b.cachedAt - a.cachedAt)[0];
+      const episode = entry.episodes[Math.floor(Math.random() * entry.episodes.length)];
+      const videoId = `${imdbId}:${episode.season}:${episode.number}`;
+      const epLabel = `S${String(episode.season).padStart(2, '0')}E${String(episode.number).padStart(2, '0')}`;
+      console.warn(`[Meta] Serving stale cache for ${imdbId} after fetch failure: ${err.message}`);
+      return res.json({
+        cacheMaxAge: 0,
+        meta: {
+          id: `shuffle:${imdbId}`,
+          type: 'series',
+          name: show.name,
+          poster: `https://images.metahub.space/poster/medium/${imdbId}/img.jpg`,
+          background: `https://images.metahub.space/background/medium/${imdbId}/img.jpg`,
+          logo: `https://images.metahub.space/logo/medium/${imdbId}/img.png`,
+          description: `🎲 Surprise — ${epLabel} — ${episode.name}. New surprise every open!`,
+          releaseInfo: `${episode.season}`,
+          imdbRating: episode.rating != null ? String(episode.rating) : undefined,
+          behaviorHints: { defaultVideoId: videoId },
+          videos: [
+            {
+              id: videoId,
+              name: `${epLabel} ${episode.name}`,
+              season: episode.season,
+              number: episode.number,
+              episode: episode.number,
+              overview: `Surprise pick for ${show.name} ${epLabel}: ${episode.name}`,
+              released: '2020-01-01T00:00:00.000Z',
+            },
+          ],
+        },
+      });
+    }
     console.error(`[Meta] Error for ${imdbId}:`, err.message);
     const fallbackVideoId = `${imdbId}:1:1`;
     res.json({
+      cacheMaxAge: 0,
       meta: {
         id: `shuffle:${imdbId}`,
         type: 'series',
@@ -285,13 +330,25 @@ async function handleStream(req, res) {
   res.json({ streams: [], cacheMaxAge: 0 });
 }
 
+// Multi-source show search: TVMaze + IMDb suggestions merged, server-side (no CORS issues)
+app.get('/search/:query.json', async (req, res) => {
+  try {
+    const q = decodeURIComponent(req.params.query || '');
+    const results = await searchShows(q);
+    res.json({ results, cacheMaxAge: 3600 });
+  } catch (err) {
+    res.status(500).json({ results: [], error: err.message });
+  }
+});
+
 // Manifest
 app.get('/manifest.json', (req, res) => {
   res.json(buildManifest(DEFAULT_CFG, req));
 });
 app.get('/:config/manifest.json', (req, res) => {
   res.json(buildManifest(req.addonConfig, req));
-  for (const show of req.addonConfig.shows) {
+  const shows = Array.isArray(req.addonConfig.shows) ? req.addonConfig.shows : [];
+  for (const show of shows) {
     getTopEpisodes(show.id, req.addonConfig.topPercent).catch(() => {});
   }
 });

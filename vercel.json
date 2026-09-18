@@ -11,6 +11,7 @@
     { "src": "/favicon.ico", "dest": "/public/logo.png" },
     { "src": "/configure", "dest": "/public/index.html" },
     { "src": "/configure/(.*)", "dest": "/public/$1" },
+    { "src": "/search/(.*)", "dest": "/src/index.js" },
     { "src": "/(.*)", "dest": "/src/index.js" }
   ]
 }
